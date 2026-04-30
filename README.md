@@ -93,22 +93,33 @@ The streaming pixel-valid interface is suitable for FPGA deployment in ground st
 
 ## Simulation
 
-With Icarus Verilog:
-
-```bash
-# Basic architecture
-iverilog -o sim_basic tb_sobel_basic.v sobel_filter_basic.v
-vvp sim_basic
-
-# Pipelined architecture
-iverilog -o sim_pipe tb_sobel_filter.v sobel_filter_pipelined.v
-vvp sim_pipe
-
-# Learned-kernel architecture
-iverilog -o sim_learned tb_sobel_learned.v sobel_filter_learned.v
-vvp sim_learned
+With Modelsim:
 ```
+# Create working library (one-time setup)
+vlib work
+vmap work work
 
+# -------------------------------
+# Basic architecture
+# -------------------------------
+vlog sobel_filter_basic.v tb_sobel_basic.v
+vsim tb_sobel_basic
+run -all
+
+# -------------------------------
+# Pipelined architecture
+# -------------------------------
+vlog sobel_filter_pipelined.v tb_sobel_filter.v
+vsim tb_sobel_filter
+run -all
+
+# -------------------------------
+# Learned-kernel architecture
+# -------------------------------
+vlog sobel_filter_learned.v tb_sobel_learned.v
+vsim tb_sobel_learned
+run -all
+```
 The testbenches feed synthetic 8×8 images with sharp horizontal and vertical edges and print `edge_out` / `edge_valid` per clock.
 
 ---
@@ -142,7 +153,7 @@ See `pipeline 1.jpg`, `pipeline 2.jpg`, `pipeline 3.jpg` — ModelSim simulation
 
 ## Tools
 
-- **Simulation:** ModelSim / Icarus Verilog
+- **Simulation:** ModelSim 
 - **Synthesis target:** Xilinx Vivado (FPGA)
 - **ML training:** PyTorch, NumPy, SciPy
 - **HDL:** Verilog-2001
