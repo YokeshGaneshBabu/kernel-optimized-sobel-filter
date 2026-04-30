@@ -1,99 +1,155 @@
-# Learned Sobel Filter
+# Kernel-Optimized Sobel Filter
 
-Small Verilog + Python project for experimenting with Sobel edge detection in hardware, with a tiny ML loop used to learn and quantize the filter kernels.
+Low-power VLSI architecture for real-time Sobel-based edge detection in satellite imagery, with an ML-to-RTL kernel learning pipeline.
 
-## What is here
+**Course:** BEVD311L — VLSI DSP Systems, VIT Chennai  
+**Team:** GeoSobel (Adithya, Hariharan, Bharghav, Yokesh, Dravidan)
 
-- `sobel_filter_basic(1).v` - basic streaming Sobel filter using fixed classic kernels.
-- `sobel_filter_pipelined(1).v` - pipelined version of the fixed Sobel datapath.
-- `sobel_filter_learned.v` - pipelined Sobel-style filter where the `Gx` and `Gy` kernels are parameters instead of hard-coded constants.
-- `train_sobel.py` - PyTorch training script that learns Sobel-like kernels from generated image samples.
-- `kernel_weights.json` - learned floating-point and quantized integer kernel values.
-- `learned_kernel_params.vh` - generated Verilog parameter form of the learned kernels.
-- `tb_sobel_learned.v` - simple testbench for the learned filter.
-- `tb_sobel_basic(1).v`, `tb_sobel_filter(1).v` - extra testbenches for the fixed Sobel versions.
+---
 
-## The ML Jazz
+## What's Here
 
-The ML part is intentionally small, but it connects directly to the hardware.
+| File | Description |
+|------|-------------|
+| `sobel_filter_basic.v` | Streaming Sobel filter with fixed classic kernels, 1-cycle registered output |
+| `sobel_filter_pipelined.v` | Fully registered 3-stage pipeline (Gx/Gy → abs → output) |
+| `sobel_filter_learned.v` | Parameterized Sobel filter with ML-learned quantized kernel weights |
+| `train_sobel.py` | PyTorch training script — learns and quantizes Gx/Gy kernels from synthetic image data |
+| `kernel_weights.json` | Trained floating-point and quantized integer kernel values |
+| `learned_kernel_params.vh` | Auto-generated Verilog `parameter` file — drop directly into `sobel_filter_learned` |
+| `tb_sobel_basic.v` | Testbench for the basic architecture |
+| `tb_sobel_filter.v` | Testbench for the pipelined architecture |
+| `tb_sobel_learned.v` | Testbench for the learned-kernel architecture |
 
-`train_sobel.py` builds a one-layer convolution model:
+---
 
-- input: one grayscale image channel
-- output: two learned 3x3 filters, one for horizontal edges `Gx` and one for vertical edges `Gy`
-- edge magnitude: `abs(Gx) + abs(Gy)`
+## Architecture Overview
 
-The model starts from the classic Sobel kernels:
+### Three Progressive Designs
 
-```text
-Gx = [-1  0  1]      Gy = [-1 -2 -1]
-     [-2  0  2]           [ 0  0  0]
-     [-1  0  1]           [ 1  2  1]
+```
+sobel_filter_basic       sobel_filter_pipelined       sobel_filter_learned
+─────────────────        ──────────────────────       ────────────────────
+Single-stage             3-stage pipeline              3-stage pipeline
+combinational Gx/Gy      Stage 1: Gx, Gy compute      Parameterized kernels
++ registered output      Stage 2: |Gx| + |Gy|         Weights from ML training
+                         Stage 3: output register      Same streaming interface
 ```
 
-During training, the script generates synthetic grayscale images containing simple rectangles, ellipses, and lines. It creates target edge maps using a fixed Sobel-style reference, then trains the convolution weights with MSE loss. This means the model is not doing heavy deep learning; it is learning a compact edge detector that can still be mapped cleanly into hardware.
+All three share the same streaming pixel interface:
 
-After training, the learned floating-point weights are quantized into small signed integers. The current learned result is:
+```verilog
+input  wire [DATA_WIDTH-1:0]  pixel_in;    // 8-bit grayscale pixel
+input  wire                   pixel_valid; // handshake
+output reg  [DATA_WIDTH+3:0]  edge_out;    // edge magnitude
+output reg                    edge_valid;  // output handshake
+```
 
-```text
+### 3×3 Window Extraction
+
+Pixels stream in row by row. Two line buffers reconstruct the previous two rows. A 3×3 shift register window is updated every clock:
+
+```
+  p00  p01  p02   ← row N-2 (line_buffer2)
+  p10  p11  p12   ← row N-1 (line_buffer1)
+  p20  p21  p22   ← row N   (current input)
+```
+
+`edge_valid` asserts only after `row >= 2 && col >= 2` — the first 2 rows and 2 columns are warm-up latency.
+
+### Classic Sobel Kernels
+
+```
+Gx = [-1  0 +1]      Gy = [-1 -2 -1]
+     [-2  0 +2]           [ 0  0  0]
+     [-1  0 +1]           [+1 +2 +1]
+
+magnitude = |Gx| + |Gy|   (L1 approximation, synthesizes efficiently)
+```
+
+### ML-Learned Kernels
+
+`train_sobel.py` trains a single-layer convolution model on synthetic grayscale images (rectangles, ellipses, lines). It minimizes MSE against a fixed Sobel reference, then quantizes the learned weights to small signed integers:
+
+```
+Learned result:
 Gx = [-3  0  3]      Gy = [-3 -8 -3]
      [-8  0  8]           [ 0  0  0]
      [-3  0  3]           [ 3  8  3]
 ```
 
-That quantization step is the important bridge: PyTorch gives flexible floating-point weights, while Verilog wants simple integer constants that synthesize efficiently. The hardware then performs a normal 3x3 dot product using those learned integer weights and shifts the result down to account for the quantization scale.
+These are written to `learned_kernel_params.vh` as Verilog parameters and loaded into `sobel_filter_learned.v` at synthesis time. No floating point in hardware — the quantization scale factor is absorbed into the output shift.
 
-## Hardware Flow
+**This closes the ML-to-RTL loop:** PyTorch → quantization → `.vh` → synthesizable Verilog.
 
-The learned hardware module streams pixels in one at a time:
+---
 
-1. Two line buffers hold previous rows.
-2. Shift registers build the current 3x3 image window.
-3. The learned `Gx` and `Gy` kernels are applied as parameterized dot products.
-4. The output edge strength is computed as `abs(gx) + abs(gy)`.
-5. A small pipeline keeps the datapath clocked and aligns `edge_valid`.
+## Application
 
-The port interface is simple:
+Hardware-accelerated edge detection for satellite and remote sensing imagery:
 
-```verilog
-input  wire clk;
-input  wire rst_n;
-input  wire [DATA_WIDTH-1:0] pixel_in;
-input  wire pixel_valid;
-output reg  [DATA_WIDTH+3:0] edge_out;
-output reg  edge_valid;
-```
+- **Disaster assessment** — structural damage detection by comparing pre/post-event imagery (floods, earthquakes, wildfires)
+- **Land cover classification** — boundary extraction from Landsat-8, Sentinel-2, WorldView multispectral data
+- **Infrastructure extraction** — road, railway, and building footprint detection
+- **Agricultural monitoring** — field boundary delineation for precision agriculture
+- **Coastline detection** — water body boundary extraction for environmental monitoring
 
-## Running the Training
+The streaming pixel-valid interface is suitable for FPGA deployment in ground stations, UAV onboard processors, or satellite edge computing units.
 
-Install the Python dependencies:
+---
+
+## Simulation
+
+With Icarus Verilog:
 
 ```bash
-pip install torch numpy pillow scipy
-```
+# Basic architecture
+iverilog -o sim_basic tb_sobel_basic.v sobel_filter_basic.v
+vvp sim_basic
 
-Run:
+# Pipelined architecture
+iverilog -o sim_pipe tb_sobel_filter.v sobel_filter_pipelined.v
+vvp sim_pipe
 
-```bash
-python train_sobel.py
-```
-
-This updates:
-
-- `kernel_weights.json`
-- `learned_kernel_params.vh`
-
-## Running a Simulation
-
-With Icarus Verilog installed:
-
-```bash
+# Learned-kernel architecture
 iverilog -o sim_learned tb_sobel_learned.v sobel_filter_learned.v
 vvp sim_learned
 ```
 
-The testbench feeds an 8x8 image with a sharp vertical edge and prints valid edge outputs as the pipeline produces them.
+The testbenches feed synthetic 8×8 images with sharp horizontal and vertical edges and print `edge_out` / `edge_valid` per clock.
 
-## Notes
+---
 
-The point of the project is not to build a big neural net. It is to show a practical ML-to-RTL path: learn tiny convolution kernels, quantize them, and drop them into a synthesizable streaming image-processing block.
+## ML Training
+
+```bash
+pip install torch numpy pillow scipy
+python train_sobel.py
+```
+
+Outputs `kernel_weights.json` and `learned_kernel_params.vh`. The `.vh` file can be directly included in `sobel_filter_learned.v` with `` `include ``.
+
+---
+
+## Key Design Notes
+
+- **`initial` block zero-init on line buffers** — prevents `X` propagation on the first output cycles (ModelSim-safe)
+- **Non-blocking assignments on line buffers** — ensures `line_buffer2[col] <= line_buffer1[col]` reads the pre-clock value, no read-before-write hazard
+- **Signed arithmetic via `$signed` cast** — avoids Verilog unsigned subtraction wrapping in Gx/Gy computation
+- **L1 magnitude (`|Gx| + |Gy|`)** — avoids the square root of L2, hardware-friendly and sufficient for binary edge maps
+- **1-cycle output latency** (basic) / **3-cycle latency** (pipelined) — documented in testbenches
+
+---
+
+## Waveform Screenshots
+
+See `pipeline 1.jpg`, `pipeline 2.jpg`, `pipeline 3.jpg` — ModelSim simulation waveforms showing window valid timing, Gx/Gy computation, and edge_valid alignment across pipeline stages.
+
+---
+
+## Tools
+
+- **Simulation:** ModelSim / Icarus Verilog
+- **Synthesis target:** Xilinx Vivado (FPGA)
+- **ML training:** PyTorch, NumPy, SciPy
+- **HDL:** Verilog-2001
