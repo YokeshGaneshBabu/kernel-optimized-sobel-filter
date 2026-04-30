@@ -1,12 +1,5 @@
 # Kernel-Optimized Sobel Filter
 
-Low-power VLSI architecture for real-time Sobel-based edge detection in satellite imagery, with an ML-to-RTL kernel learning pipeline.
-
-**Course:** BEVD311L — VLSI DSP Systems, VIT Chennai  
-**Team:** GeoSobel (Adithya, Hariharan, Bharghav, Yokesh, Dravidan)
-
----
-
 ## What's Here
 
 | File | Description |
